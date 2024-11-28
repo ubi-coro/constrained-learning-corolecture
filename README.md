@@ -13,5 +13,12 @@ conda activate celm
 pip install -e .
 ```
 
+To run the synthetic examples: 
+``` 
+python constrained_learning\examples\flat_gaussian.py
+python constrained_learning\examples\monotone_quadratic.py
+python constrained_learning\examples\ode.py
+```
+
 # License
 MIT license - See [LICENSE](LICENSE).   

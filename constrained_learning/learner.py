@@ -307,35 +307,40 @@ class ELM(BaseLearner):
 
 
 class CELM(ELM):
-    """Implementation of an extreme learning machine with output constraints.
+    """
+    Implementation of an extreme learning machine (ELM) with output constraints.
 
-        Weighted sums of arbitrary partial derivatives of the output nodes can be
-        constrained by adding subclasses of 'BaseConstraint' during construction.
-        By freezing all layers except the last layer, the constrained optimization problem
-        reduces to a linearly constrained quadratic optimization problem (quadratic programming, QP)
-        w.r.t to the output weights, which can be solved using interior-point methods. To ensure
-        continuous constraints hold, sampling and iteratively recomputing the QP-solution are applied
-        until a predefined percentage of samples fulfill the constraint or a maximum number of iterations
-        is reached.
+    This class extends the traditional ELM by allowing output constraints defined
+    as weighted sums of arbitrary partial derivatives of the output nodes. These
+    constraints are implemented as quadratic programming (QP) problems solved
+    iteratively until the desired constraint satisfaction is achieved.
 
+    Constraints can be added during initialization using the `cieqcs`, `ceqcs`,
+    `dieqcs`, `deqcs`, and `obj_fcts` parameters, representing continuous inequality
+    constraints, continuous equality constraints, discrete inequality constraints,
+    discrete equality constraints, and objective functions, respectively.
 
-        Parameters:
-        - inp_dim (int): The dimensionality of the input layer.
-        - out_dim (int): The dimensionality of the output layer.
-        - hid_dim (int, optional): The number of neurons in the hidden layer. Defaults to 30.
-        - max_iter (int, optional): The maximum number of SQPs for continuous constraint implementation . Defaults to 1000.
-        - batch_size (int, optional): The size of the batch used in training. Defaults to 10000.
-        - reg (float, optional): The weight of L2 regularization to prevent overfitting. Defaults to 1e-6.
-        - mu (float, optional): The activity level for batch intrinsic plasticity (see bip). Defaults to 0.3.
-        - eps (float, optional): The relaxation parameter for equality constraint checks. Defaults to 1e-3.
-        - bip (bool, optional): Flag to use batch intrinsic plasticity, similar to batch normalization, for improved training stability. Defaults to False.
-        - normalize (bool, optional): Flag to normalize input data, potentially improving model performance. Defaults to False.
-        - verbose (int, optional): The frequency of console output during training, for monitoring progress in (0,1,2). Defaults to 2 (highest frequency).
-        - cieqcs (np.array, optional): An array of Continuous Inequality Constraint (CIEQC) instances for the network. Defaults to an empty array.
-        - ceqcs (np.array, optional): An array of Continuous Equality Constraint (CEQC) instances for the network. Defaults to an empty array.
-        - dieqcs (np.array, optional): An array of Discrete Inequality Constraint (DIEQC) instances for the network. Defaults to an empty array.
-        - deqcs (np.array, optional): An array of Discrete Equality Constraint (DEQC) instances for the network. Defaults to an empty array.
-        - obj_fcts (np.array, optional): An array of objective functions, such as to solve Differential Equations. Defaults to an empty array.
+    Args:
+        inp_dim (int): Dimensionality of the input layer.
+        out_dim (int): Dimensionality of the output layer.
+        hid_dim (int, optional): Number of neurons in the hidden layer. Defaults to 30.
+        max_iter (int, optional): Maximum number of iterations for constraint satisfaction. Defaults to 1000.
+        batch_size (int, optional): Batch size for training. Defaults to 10000.
+        reg (float, optional): Weight of L2 regularization. Defaults to 1e-6.
+        mu (float, optional): Activity level for batch intrinsic plasticity. Defaults to 0.3.
+        eps (float, optional): Relaxation parameter for equality constraint checks. Defaults to 1e-3.
+        bip (bool, optional): If True, applies batch intrinsic plasticity for improved training stability. Defaults to False.
+        normalize (bool, optional): If True, normalizes input data for better performance. Defaults to False.
+        verbose (int, optional): Verbosity level for training progress output (0: silent, 2: detailed). Defaults to 2.
+        callbacks (List[Callable], optional): Callback functions executed after each training iteration. Defaults to None.
+        cieqcs (np.ndarray, optional): Continuous inequality constraints. Defaults to an empty array.
+        ceqcs (np.ndarray, optional): Continuous equality constraints. Defaults to an empty array.
+        dieqcs (np.ndarray, optional): Discrete inequality constraints. Defaults to an empty array.
+        deqcs (np.ndarray, optional): Discrete equality constraints. Defaults to an empty array.
+        obj_fcts (np.ndarray, optional): Objective functions for solving additional constraints or differential equations. Defaults to an empty array.
+
+    Attributes:
+        terminate (bool): If True, allows manual interruption of training. Triggered by pressing escape.
     """
 
     def __init__(self, inp_dim: int, out_dim: int,
@@ -348,6 +353,7 @@ class CELM(ELM):
                  bip: bool = False,
                  normalize: bool = False,
                  verbose: int = 2,
+                 callbacks: List[Callable] | None = None,
                  cieqcs=np.array([]), 
                  ceqcs=np.array([]), 
                  dieqcs=np.array([]), 
@@ -358,12 +364,15 @@ class CELM(ELM):
         self.verbose = verbose
         self.hid_dim = hid_dim
         self._eps = eps
+        if callbacks is None:
+            callbacks = []
+        self.callbacks = callbacks
 
-        self._cieqcs = list(cieqcs)
-        self._ceqcs = list(ceqcs)
-        self._dieqcs = list(dieqcs)
-        self._deqcs = list(deqcs)
-        self._obj_fcts = list(obj_fcts)
+        self.cieqcs = list(cieqcs)
+        self.ceqcs = list(ceqcs)
+        self.dieqcs = list(dieqcs)
+        self.deqcs = list(deqcs)
+        self.obj_fcts = list(obj_fcts)
         self.max_iter = max_iter
 
         self._aeq = np.array([])
@@ -381,7 +390,17 @@ class CELM(ELM):
         self._listener = Listener(on_press=on_press, on_release=on_release)
 
     def init(self, x=None):
-        """Initializes constraint test values and dimensionalities. Must be called prior to .train(...) and .apply(...)!"""
+        """
+        Initialize the CELM model by setting up constraint test values and dimensionalities.
+
+        This method must be called before using the `train` or `apply` methods.
+
+        Args:
+            x (np.ndarray, optional): Input data for initialization. Defaults to None.
+
+        Raises:
+            ValueError: If `x` is not a numpy array or if required parameters are missing.
+        """
 
         if x is not None and not isinstance(x, np.ndarray):
             raise ValueError("'x' must either be None or a numpy array")
@@ -389,39 +408,49 @@ class CELM(ELM):
             raise ValueError("Can only apply Batch Intrinic Plasticity when 'x' was passed")
         ELM.init(self, x)
 
-        num_objfct = len(self._obj_fcts)
+        num_objfct = len(self.obj_fcts)
         for i in range(num_objfct):
-            self._obj_fcts[i].inp_dim = self.inp_dim
+            self.obj_fcts[i].inp_dim = self.inp_dim
 
-        num_dieqs = len(self._dieqcs)
+        num_dieqs = len(self.dieqcs)
         for i in range(num_dieqs):
-            self._dieqcs[i].inp_dim = self.inp_dim
+            self.dieqcs[i].inp_dim = self.inp_dim
 
-        num_deqs = len(self._deqcs)
+        num_deqs = len(self.deqcs)
         for i in range(num_deqs):
-            self._deqcs[i].inp_dim = self.inp_dim
+            self.deqcs[i].inp_dim = self.inp_dim
 
-        num_cieqs = len(self._cieqcs)
+        num_cieqs = len(self.cieqcs)
         for i in range(num_cieqs):
-            self._cieqcs[i].inp_dim = self.inp_dim
-            if self._cieqcs[i].max_test_value is None:
-                self._cieqcs[i].max_test_value = self._cieqcs[i].max_value
-            if self._cieqcs[i].min_test_value is None:
-                self._cieqcs[i].min_test_value = self._cieqcs[i].min_value
+            self.cieqcs[i].inp_dim = self.inp_dim
+            if self.cieqcs[i].max_test_value is None:
+                self.cieqcs[i].max_test_value = self.cieqcs[i].max_value
+            if self.cieqcs[i].min_test_value is None:
+                self.cieqcs[i].min_test_value = self.cieqcs[i].min_value
 
-        num_ceqs = len(self._ceqcs)
+        num_ceqs = len(self.ceqcs)
         for i in range(num_ceqs):
-            self._ceqcs[i].inp_dim = self.inp_dim
-            if self._ceqcs[i].max_test_value is None:
-                self._ceqcs[i].max_test_value = self.__get_eq_test_value(self._ceqcs[i].value, self._eps)
-            if self._ceqcs[i].min_test_value is None:
-                self._ceqcs[i].min_test_value = self.__get_eq_test_value(self._ceqcs[i].value, -self._eps)
-
-    def grad(self, u):
-        return np.array([-self.__fct(u, [[i]], [1]) for i in range(self.inp_dim)]).T
+            self.ceqcs[i].inp_dim = self.inp_dim
+            if self.ceqcs[i].max_test_value is None:
+                self.ceqcs[i].max_test_value = self.__get_eq_test_value(self.ceqcs[i].value, self._eps)
+            if self.ceqcs[i].min_test_value is None:
+                self.ceqcs[i].min_test_value = self.__get_eq_test_value(self.ceqcs[i].value, -self._eps)
 
     def train(self, x, y):
-        """Runs sequential quadratic program to minimize || self(x)-y || and respect possibly continuous constraints."""
+        """
+        Train the CELM model using input data `x` and target data `y`.
+
+        This method runs a sequential quadratic programming process to minimize
+        the mean squared error (MSE) while respecting constraints.
+
+        Args:
+            x (np.ndarray): Input data.
+            y (np.ndarray): Target data.
+
+        Returns:
+            dict: Training results containing iteration count, MSE values,
+                  and constraint reliabilities.
+        """
 
         if not isinstance(x, np.ndarray):
             raise ValueError("'x' must be a numpy array")
@@ -441,18 +470,18 @@ class CELM(ELM):
         if self._normalize:
             x = self.normalize(x, overwrite=True)
 
-        num_cieqcs = len(self._cieqcs)
-        num_ceqcs = len(self._ceqcs)
+        num_cieqcs = len(self.cieqcs)
+        num_ceqcs = len(self.ceqcs)
 
         if self._normalize:
-            for con in self._dieqcs:
+            for con in self.dieqcs:
                 con.u = self.normalize(np.atleast_2d(con.u))
-            for con in self._deqcs:
+            for con in self.deqcs:
                 con.u = self.normalize(np.atleast_2d(con.u))
 
         self.__clear_constraints()
-        self.__fill_ieq_matrix(self._dieqcs)
-        self.__fill_eq_matrix(self._deqcs)
+        self.__fill_ieq_matrix(self.dieqcs)
+        self.__fill_eq_matrix(self.deqcs)
         self.__qp(x, y)
 
         if num_cieqcs + num_ceqcs != 0:
@@ -477,11 +506,11 @@ class CELM(ELM):
                 lb_ceqcs = [0 for _ in range(num_ceqcs)]
 
                 # draw samples
-                for c, con in enumerate(self._cieqcs):
+                for c, con in enumerate(self.cieqcs):
                     test_samples_cieqcs[c] = con.draw_test_samples()
                     if self._normalize:
                         test_samples_cieqcs[c] = self.normalize(test_samples_cieqcs[c])
-                for c, con in enumerate(self._ceqcs):
+                for c, con in enumerate(self.ceqcs):
                     test_samples_ceqcs[c] = con.draw_test_samples()
                     if self._normalize:
                         test_samples_ceqcs[c] = self.normalize(test_samples_ceqcs[c])
@@ -489,7 +518,7 @@ class CELM(ELM):
                 # check inequality constraints
                 violationcount_cieqcs = np.zeros(num_cieqcs)
                 violationcount_ceqcs = np.zeros(num_ceqcs)
-                for c, con in enumerate(self._cieqcs):
+                for c, con in enumerate(self.cieqcs):
                     violations_cieqcs[c] = 0
                     samples = self.__check_sample_dim(test_samples_cieqcs[c])
                     
@@ -506,7 +535,7 @@ class CELM(ELM):
                                                       (violations_cieqcs[c] < lb_cieqcs[c]))
 
                 # check equality constraints
-                for c, con in enumerate(self._ceqcs):
+                for c, con in enumerate(self.ceqcs):
                     violations_ceqcs[c] = 0
                     samples = self.__check_sample_dim(test_samples_ceqcs[c])
 
@@ -528,12 +557,12 @@ class CELM(ELM):
                 if num_cieqcs > 0:
                     cmd_output += "IEQs: "
                     for c in range(num_cieqcs - 1):
-                        nInputs = len(self._cieqcs[c].u)
-                        reliability = 1 - (violationcount_cieqcs[c] / self._cieqcs[c].test_samples_per_iteration)
+                        nInputs = len(self.cieqcs[c].u)
+                        reliability = 1 - (violationcount_cieqcs[c] / self.cieqcs[c].test_samples_per_iteration)
                         cmd_output += f"Rel. ({nInputs}): {reliability:.3f}, "
                         _reliability.append( ('CIEQC_'+str(c), reliability))
-                    nInputs = len(self._cieqcs[num_cieqcs - 1].u)
-                    reliability = 1 - (violationcount_cieqcs[num_cieqcs - 1] / self._cieqcs[
+                    nInputs = len(self.cieqcs[num_cieqcs - 1].u)
+                    reliability = 1 - (violationcount_cieqcs[num_cieqcs - 1] / self.cieqcs[
                         num_cieqcs - 1].test_samples_per_iteration)
                     cmd_output += f"Rel. ({nInputs}): {reliability:.3f}"
                     _reliability.append(('CIEQC_' + str(num_cieqcs - 1), reliability))
@@ -541,22 +570,22 @@ class CELM(ELM):
                 if num_ceqcs > 0:
                     cmd_output += "EQs: "
                     for c in range(num_ceqcs - 1):
-                        nInputs = len(self._ceqcs[c].u)
-                        reliability = 1 - (violationcount_ceqcs[c] / self._ceqcs[c].test_samples_per_iteration)
+                        nInputs = len(self.ceqcs[c].u)
+                        reliability = 1 - (violationcount_ceqcs[c] / self.ceqcs[c].test_samples_per_iteration)
                         cmd_output += f"Rel. ({nInputs}): {reliability:.3f}, "
                         _reliability.append(('CEQC_' + str(c), reliability))
-                    nInputs = len(self._ceqcs[num_ceqcs - 1].u)
-                    reliability = 1 - (violationcount_ceqcs[num_ceqcs - 1] / self._ceqcs[
+                    nInputs = len(self.ceqcs[num_ceqcs - 1].u)
+                    reliability = 1 - (violationcount_ceqcs[num_ceqcs - 1] / self.ceqcs[
                         num_ceqcs - 1].test_samples_per_iteration)
                     cmd_output += f"Rel. ({nInputs}): {reliability:.3f}"
                     _reliability.append(('CEQC_' + str(num_cieqcs - 1), reliability))
                 reliab.append(_reliability)
 
                 # break test
-                test_samples_per_iteration_cieqcs = [con.test_samples_per_iteration for con in self._cieqcs]
-                test_samples_per_iteration_ceqcs = [con.test_samples_per_iteration for con in self._ceqcs]
-                satisfaction_thresholds_cieqcs = [con.satisfaction_threshold for con in self._cieqcs]
-                satisfaction_thresholds_ceqcs = [con.satisfaction_threshold for con in self._ceqcs]
+                test_samples_per_iteration_cieqcs = [con.test_samples_per_iteration for con in self.cieqcs]
+                test_samples_per_iteration_ceqcs = [con.test_samples_per_iteration for con in self.ceqcs]
+                satisfaction_thresholds_cieqcs = [con.satisfaction_threshold for con in self.cieqcs]
+                satisfaction_thresholds_ceqcs = [con.satisfaction_threshold for con in self.ceqcs]
 
                 flag_StopSampling_cieqcs = (1 - np.divide(violationcount_cieqcs,
                                                           test_samples_per_iteration_cieqcs)) > satisfaction_thresholds_cieqcs
@@ -566,7 +595,7 @@ class CELM(ELM):
                     break
 
                 # add most violating points (inequalities)
-                for c, con in enumerate(self._cieqcs):
+                for c, con in enumerate(self.cieqcs):
                     if flag_StopSampling_cieqcs[c] == 0:
 
                         viol = violations_cieqcs[c]
@@ -592,7 +621,7 @@ class CELM(ELM):
                             j += 1
 
                 # add most violating points (equalities)
-                for c, con in enumerate(self._ceqcs):
+                for c, con in enumerate(self.ceqcs):
                     if flag_StopSampling_ceqcs[c] == 0:
 
                         viol = violations_ceqcs[c]
@@ -619,10 +648,10 @@ class CELM(ELM):
 
                 # constraint learning
                 self.__clear_constraints()
-                self.__fill_ieq_matrix(self._cieqcs)
-                self.__fill_eq_matrix(self._ceqcs)
-                self.__fill_ieq_matrix(self._dieqcs)
-                self.__fill_eq_matrix(self._deqcs)
+                self.__fill_ieq_matrix(self.cieqcs)
+                self.__fill_eq_matrix(self.ceqcs)
+                self.__fill_ieq_matrix(self.dieqcs)
+                self.__fill_eq_matrix(self.deqcs)
 
                 try:
                     cmd_output += self.__qp(x, y)
@@ -634,6 +663,9 @@ class CELM(ELM):
                     print("Iteration (" + str(i + 1) + ")")
                 elif self.verbose == 2:
                     print(cmd_output)
+
+                for callback in self.callbacks:
+                    callback(i, self)
         else:
             i = 0
         print("Learning finished")
@@ -643,6 +675,18 @@ class CELM(ELM):
             'mse': mse,
             'reliability': reliab
         }
+
+    def grad(self, u):
+        """
+        Compute the gradient of the output with respect to input `u`.
+
+        Args:
+            u (np.ndarray): Input data.
+
+        Returns:
+            np.ndarray: Gradient matrix.
+        """
+        return np.array([-self.__fct(u, [[i]], [1]) for i in range(self.inp_dim)]).T
 
     def __qp(self, x, y):
         """Solve quadratic program subject to constraints defined by self.aieq, self.aeq, self.bieq and self.beq."""
@@ -724,7 +768,7 @@ class CELM(ELM):
         if not isinstance(y, np.ndarray):
             raise ValueError("'y' must be a numpy array")
 
-        if not self._obj_fcts:
+        if not self.obj_fcts:
             h = self._ELM__calc_hidden_state(x)
             return (utils.stack((h, np.ones((h.shape[0], 1))), 'h'), y)
 
@@ -734,7 +778,7 @@ class CELM(ELM):
 
         Heff = np.array([])
         Yeff = np.array([])
-        for of, objfct in enumerate(self._obj_fcts):
+        for of, objfct in enumerate(self.obj_fcts):
             num_samples = x.shape[0]
             if num_samples == 0:
                 return
@@ -995,7 +1039,7 @@ class CELM(ELM):
     def __mse(self, x, y):
         """L2 error with objective functions."""
         [Heff, Yeff] = self.__objective_function(x, y)
-        if not self._obj_fcts:
+        if not self.obj_fcts:
             diff = Heff.dot(self.out_weights) - Yeff
             return np.mean(diff ** 2, axis=0)
         else:
@@ -1005,7 +1049,7 @@ class CELM(ELM):
     def __mae(self, x, y):
         """L1 error with objective functions."""
         [Heff, Yeff] = self.__objective_function(x, y)
-        if not self._obj_fcts:
+        if not self.obj_fcts:
             diff = Heff.dot(self.out_weights) - Yeff
             return np.mean(np.abs(diff), axis=0)
         else:
@@ -1027,7 +1071,8 @@ class CMLP(BaseLearner, nn.Module):
                  eps=1e-3,
                  tik=1e-4,
                  reg=1e-6,
-                 normalize=False):
+                 normalize=False,
+                 callbacks=None):
 
         # check input
         if not isinstance(verbose, int) or verbose not in (0, 1, 2):
@@ -1052,6 +1097,9 @@ class CMLP(BaseLearner, nn.Module):
         self._epoch_sample_buffer = []
         self._epoch_sample_idc = []
         self._previous_epoch_sample_buffer = []
+        if callbacks is None:
+            callbacks = []
+        self.callbacks = callbacks
 
         # hyper-parameters
         self._normalize = normalize
@@ -1451,6 +1499,9 @@ class CMLP(BaseLearner, nn.Module):
             if self.terminate:
                 self.__stdout("Learning was interrupted manually")
                 break
+
+            for callback in self.callbacks:
+                callback(epoch, self)
 
         self._epoch_cout_buffer = ''
         self._epoch_metrics_buffer = {}

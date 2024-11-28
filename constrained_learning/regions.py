@@ -1,3 +1,15 @@
+"""
+sampling_regions.py
+
+This module defines classes for representing sampling regions, including
+N-dimensional boxes, their surfaces, and parametric surfaces. These regions
+can be used for sampling points and calculating properties such as volume
+or surface area.
+
+Version: 3.1
+Author: Jannick Stranghöner
+"""
+
 __all__ = ['Box', 'BoxSurface', 'ParametricSurface']
 __version__ = '3.1'
 __author__ = 'Jannick Stranghöner'
@@ -9,17 +21,48 @@ import utils
 
 
 class SamplingRegion(ABC):
+    """
+    Abstract base class for sampling regions.
+
+    Classes inheriting from `SamplingRegion` must implement methods for:
+        - Calculating the "mass" of the region (`get_mass`).
+        - Sampling points from the region (`sample`).
+    """
     @abstractmethod
     def get_mass(self):
+        """
+        Calculate the "mass" of the region (e.g., volume or surface area).
+
+        Returns:
+            float: Mass of the region.
+        """
         pass
 
     @abstractmethod
     def sample(self, num_samples):
+        """
+        Sample points from the region.
+
+        Args:
+            num_samples (int): Number of points to sample.
+
+        Returns:
+            np.ndarray: Array of sampled points.
+        """
         pass
 
 
 class Box(SamplingRegion):
-    """N-dimensional box whose sides are orthogonal to the coordinate axes."""
+    """
+    N-dimensional box whose sides are orthogonal to the coordinate axes.
+
+    Args:
+        upper_bounds (array-like): Upper bounds of the box for each dimension.
+        lower_bounds (array-like): Lower bounds of the box for each dimension.
+
+    Raises:
+        ValueError: If the dimensionality of upper and lower bounds does not match.
+    """
     def __init__(self, upper_bounds, lower_bounds):
 
         self.upper_bounds = upper_bounds if utils.check_array(upper_bounds) else np.asarray(upper_bounds)
@@ -44,7 +87,13 @@ class Box(SamplingRegion):
 
 
 class BoxSurface(Box):
-    """Surface of N-dimensional box whose sides are orthogonal to the coordinate axes."""
+    """
+    Surface of an N-dimensional box whose sides are orthogonal to the coordinate axes.
+
+    Args:
+        upper_bounds (array-like): Upper bounds of the box for each dimension.
+        lower_bounds (array-like): Lower bounds of the box for each dimension.
+    """
     def __init__(self, upper_bounds, lower_bounds):
         super().__init__(upper_bounds, lower_bounds)
 
@@ -95,7 +144,16 @@ class BoxSurface(Box):
 
 
 class OrthogonalSurface(SamplingRegion):
-    """(N-1)-dimensional box surface that sits orthogonal on the 'offset_dim' axis at 'offset'."""
+    """
+    Represents a (N-1)-dimensional box surface orthogonal to one axis.
+
+    Args:
+        upper_bounds (array-like): Upper bounds of the surface.
+        lower_bounds (array-like): Lower bounds of the surface.
+        offset (float): Position of the surface along the orthogonal axis.
+        offset_dim (int): Dimension orthogonal to the surface.
+        side (str): Either 'top' or 'bottom', defines the normal direction.
+    """
     def __init__(self, upper_bounds,
                  lower_bounds,
                  offset,
@@ -139,6 +197,14 @@ class OrthogonalSurface(SamplingRegion):
 
 
 class ParametricSurface(SamplingRegion):
+    """
+    Parametric surface defined by functions of a single parameter.
+
+    Args:
+        funcs (list of Callable): Functions defining the surface.
+        t_min (float): Minimum parameter value. Default is 0.0.
+        t_max (float): Maximum parameter value. Default is 1.0.
+    """
     def __init__(self, funcs, t_min=0.0, t_max=1.0):
         self.t_max = t_max
         self.t_min = t_min
