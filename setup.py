@@ -16,7 +16,8 @@ setup(
         "pyLasaDataset>=0.1.1",
         "scikit_learn>=1.2.2",
         "scipy>=1.10.1",
-        "torch>=2.0.1"
+        "torch>=2.0.1",
+        "jupyterlab"
     ],
     url='https://github.com/ubi-coro/constrained_learning',
     author='Jannick Stranghöner',

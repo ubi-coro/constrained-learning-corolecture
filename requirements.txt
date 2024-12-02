@@ -7,4 +7,4 @@ pyLasaDataset==0.1.1
 scikit_learn==1.2.2
 scipy==1.10.1
 torch==2.0.1+cu117
-ipython
+jupyterlab
